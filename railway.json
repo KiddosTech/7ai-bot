@@ -1,0 +1,9 @@
+{
+  "build": {
+    "builder": "nixpacks",
+    "config": {
+      "runtime": "node"
+    }
+  }
+}
+EOF
