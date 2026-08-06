@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log
+.env
+.git
+.gitignore
+auth_info_baileys
+database/users.json
+database/config.json
+*.log
