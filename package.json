@@ -4,24 +4,21 @@
   "description": "7A Intelligence (7AI) - WhatsApp Bot",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "build": "npm install"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
     "@whiskeysockets/baileys": "^6.7.0",
+    "@hapi/boom": "^10.0.1",
     "dotenv": "^16.4.5",
     "groq-sdk": "^0.8.0",
     "node-cron": "^3.0.3",
     "qrcode-terminal": "^0.12.0",
     "pino": "^9.5.0",
-    "@hapi/boom": "^10.0.1",
     "express": "^4.18.2"
-  }
-}
-{
-  "scripts": {
-    "start": "npm start"
   }
 }
