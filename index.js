@@ -9,6 +9,7 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import express from 'express';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +45,6 @@ async function initializeDatabase() {
         consoleLog('Database initialized', 'success');
     } catch (error) {
         consoleLog(`Database error: ${error.message}`, 'error');
-        process.exit(1);
     }
 }
 
@@ -154,7 +154,7 @@ const commands = {
         let limit = config.aiLimits[user.role] || 5;
         if (user.vipType === 'fasttrack') limit = config.vip.fastTrack.dailyLimit;
         else if (user.vipType === 'real_vip') limit = Math.max(Math.floor(config.vip.realVip.limitPercentage * user.points), config.aiLimits.real_vip);
-        if (user.role === 'root_admin') limit = '∞';
+        if (user.role === 'root_admin' || user.role === 'admin' || user.role === 'operational_admin') limit = '∞';
 
         let text = `👤 *PROFIL 7AI*\n\n`;
         text += `📱 Nomor: ${formatNumber(userId)}\n`;
@@ -236,8 +236,6 @@ const commands = {
         if (user.aiUsedToday >= limit && limit !== Infinity) {
             return `⚠️ *LIMIT AI HARIAN HABIS!*\n\n📊 ${user.aiUsedToday}/${limit}\n🕐 Reset: 00:00 WIB\n\n💡 Upgrade ke VIP: !buyvip`;
         }
-
-        await sock.sendMessage(userId, { text: '🤔 *7AI sedang berpikir...*' });
 
         try {
             const response = await aiService.generateResponse(prompt, `Kelas 7A SMP`);
@@ -511,10 +509,6 @@ function setupCronJobs() {
             await db.bulkUpdateUsers(users => {
                 Object.keys(users).forEach(userId => {
                     const user = users[userId];
-                    if (user.role === 'root_admin') {
-                        user.aiUsedToday = 0;
-                        return;
-                    }
                     user.aiUsedToday = 0;
                     if (user.vipType === 'real_vip') {
                         user.points = Math.max(0, (user.points || 0) - 50);
@@ -537,6 +531,24 @@ function setupCronJobs() {
     }, { timezone: 'Asia/Jakarta' });
 }
 
+// ==================== KEEP-ALIVE SERVER ====================
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.json({
+        status: 'online',
+        bot: '7A Intelligence (7AI)',
+        version: '2.0.0',
+        uptime: Math.floor((Date.now() - botStartTime) / 1000),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
+
 // ==================== WHATSAPP CONNECTION ====================
 async function connectToWhatsApp() {
     try {
@@ -558,7 +570,7 @@ async function connectToWhatsApp() {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
-                console.log('\n📱 Scan QR Code:\n');
+                console.log('\n📱 Scan QR Code berikut:\n');
                 qrcode.generate(qr, { small: true });
             }
             
@@ -567,13 +579,14 @@ async function connectToWhatsApp() {
                 const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                 consoleLog(`Connection closed (${statusCode})`, 'warning');
                 if (shouldReconnect) {
+                    consoleLog('Reconnecting in 5s...', 'info');
                     setTimeout(() => connectToWhatsApp(), 5000);
                 } else {
-                    consoleLog('Logged out. Restart required.', 'error');
+                    consoleLog('Logged out! Restart bot.', 'error');
                 }
             } else if (connection === 'open') {
-                consoleLog('Bot connected!', 'success');
-                consoleLog(`${config.botName} ready!`, 'success');
+                consoleLog('✅ Bot connected!', 'success');
+                consoleLog(`🤖 ${config.botName} ready!`, 'success');
             }
         });
 
@@ -597,12 +610,18 @@ async function connectToWhatsApp() {
 // ==================== MAIN ====================
 async function main() {
     console.log('\n==================================================');
-    console.log('🚀 Starting 7A Intelligence Bot...');
+    console.log('🚀 7A Intelligence Bot Starting...');
     console.log('==================================================\n');
     
     await initializeDatabase();
     setupCronJobs();
     
+    // Start keep-alive server
+    app.listen(PORT, '0.0.0.0', () => {
+        consoleLog(`🌐 Health server: http://0.0.0.0:${PORT}`, 'success');
+    });
+    
+    // Handle shutdown
     process.on('SIGINT', async () => {
         consoleLog('Shutting down...', 'warning');
         process.exit(0);
