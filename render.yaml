@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: 7ai-bot
+    env: node
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
