@@ -1,0 +1,48 @@
+{
+  "195855541919984@lid": {
+    "name": "Siswa 7A",
+    "role": "operational_admin",
+    "vipType": "none",
+    "vipExpiredAt": null,
+    "points": 0,
+    "customAiLimit": 0,
+    "aiUsedToday": 0,
+    "isBanned": false
+  },
+  "120363409584377696@g.us": {
+    "name": "Siswa 7A",
+    "role": "member",
+    "vipType": "none",
+    "vipExpiredAt": null,
+    "points": 0,
+    "customAiLimit": 0,
+    "aiUsedToday": 0,
+    "isBanned": false,
+    "lastQuestion": "Apa bahasa Inggrisnya \"sekolah\"?",
+    "lastAnswer": "school",
+    "quizActive": true
+  },
+  "93068317474964@lid": {
+    "name": "Siswa 7A",
+    "role": "member",
+    "vipType": "none",
+    "vipExpiredAt": null,
+    "points": 0,
+    "customAiLimit": 0,
+    "aiUsedToday": 0,
+    "isBanned": false
+  },
+  "49749260501182@lid": {
+    "name": "Siswa 7A",
+    "role": "member",
+    "vipType": "none",
+    "vipExpiredAt": null,
+    "points": 0,
+    "customAiLimit": 0,
+    "aiUsedToday": 0,
+    "isBanned": false,
+    "lastQuestion": "Siapa presiden pertama Indonesia?",
+    "lastAnswer": "soekarno",
+    "quizActive": true
+  }
+}
