@@ -1,15 +1,11 @@
 {
-  "name": "7a-intelligence-bot",
-  "version": "2.0.0",
+  "name": "7ai-bot",
+  "version": "1.0.0",
   "description": "7A Intelligence (7AI) - WhatsApp Bot",
   "main": "index.js",
   "type": "module",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "scripts": {
-    "start": "node index.js",
-    "build": "npm install"
+    "start": "node index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.0",
