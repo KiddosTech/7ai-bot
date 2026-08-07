@@ -4,91 +4,65 @@ import { config } from './config.js';
 
 class AIServiceManager {
     constructor() {
-        // Initialize Groq clients
+        // Groq
         this.groqKeys = config.groq.apiKeys;
         this.groqClients = this.groqKeys.map(key => new Groq({ apiKey: key }));
         this.currentGroqIndex = 0;
-        
-        // Initialize Google AI clients
-        this.googleKeys = config.googleAI.apiKeys;
+
+        // Google AI
+        this.googleKeys = config.googleAI.apiKeys.filter(k => k && k !== 'your_google_key_2_here');
         this.googleClients = this.googleKeys.map(key => {
             const genAI = new GoogleGenerativeAI(key);
             return genAI.getGenerativeModel({ model: config.googleAI.model });
         });
         this.currentGoogleIndex = 0;
-        
-        // Provider management
+
+        // Provider
         this.providerPriority = config.aiProvider;
         this.currentProvider = this.determineInitialProvider();
         this.providerStats = {
-            groq: { success: 0, failed: 0, lastUsed: null },
-            google: { success: 0, failed: 0, lastUsed: null }
+            groq: { success: 0, failed: 0 },
+            google: { success: 0, failed: 0 }
         };
-        
-        console.log('🤖 AI Service Manager initialized:');
-        console.log(`   - Groq API Keys: ${this.groqKeys.length}`);
-        console.log(`   - Google AI Keys: ${this.googleKeys.length}`);
+
+        console.log('🤖 AI Service Manager:');
+        console.log(`   - Groq Keys: ${this.groqKeys.length}`);
+        console.log(`   - Google Keys: ${this.googleKeys.length}`);
         console.log(`   - Priority: ${this.providerPriority}`);
-        console.log(`   - Starting Provider: ${this.currentProvider}`);
+        console.log(`   - Provider: ${this.currentProvider.toUpperCase()}`);
     }
 
     determineInitialProvider() {
-        if (this.providerPriority === 'groq' && this.groqKeys.length > 0) {
-            return 'groq';
-        } else if (this.providerPriority === 'google' && this.googleKeys.length > 0) {
-            return 'google';
-        } else if (this.providerPriority === 'auto') {
-            // Auto-select based on available keys
+        if (this.providerPriority === 'groq' && this.groqKeys.length > 0) return 'groq';
+        if (this.providerPriority === 'google' && this.googleKeys.length > 0) return 'google';
+        if (this.providerPriority === 'auto') {
             if (this.groqKeys.length > 0) return 'groq';
             if (this.googleKeys.length > 0) return 'google';
         }
-        
-        // Fallback
         if (this.groqKeys.length > 0) return 'groq';
         if (this.googleKeys.length > 0) return 'google';
-        
         throw new Error('No AI API keys configured!');
     }
 
-    async switchProvider() {
-        const previousProvider = this.currentProvider;
-        
+    switchProvider() {
         if (this.currentProvider === 'groq' && this.googleKeys.length > 0) {
             this.currentProvider = 'google';
         } else if (this.currentProvider === 'google' && this.groqKeys.length > 0) {
             this.currentProvider = 'groq';
-        } else {
-            // If only one provider available, rotate keys within same provider
-            if (this.currentProvider === 'groq') {
-                this.rotateGroqKey();
-            } else {
-                this.rotateGoogleKey();
-            }
-            return;
         }
-        
-        console.log(`🔄 Switched AI Provider: ${previousProvider} → ${this.currentProvider}`);
     }
 
     rotateGroqKey() {
         this.currentGroqIndex = (this.currentGroqIndex + 1) % this.groqKeys.length;
-        console.log(`🔄 Rotated Groq API Key to #${this.currentGroqIndex + 1}`);
     }
 
     rotateGoogleKey() {
         this.currentGoogleIndex = (this.currentGoogleIndex + 1) % this.googleKeys.length;
-        console.log(`🔄 Rotated Google AI Key to #${this.currentGoogleIndex + 1}`);
     }
 
-    async generateWithGroq(prompt, context) {
-        const systemPrompt = `Kamu adalah 7A Intelligence (7AI), asisten AI untuk kelas 7A SMP. 
-        Kamu ramah, edukatif, dan membantu siswa belajar. 
-        Gunakan bahasa Indonesia yang santai, jelas, dan mudah dipahami.
-        Berikan jawaban yang akurat tapi tetap menyenangkan.
-        Konteks: ${context}`;
-
+    async generateWithGroq(prompt) {
+        const systemPrompt = 'Kamu adalah 7A Intelligence (7AI), asisten AI untuk kelas 7A SMP. Ramah, edukatif, bahasa Indonesia santai.';
         const client = this.groqClients[this.currentGroqIndex];
-        
         const completion = await client.chat.completions.create({
             model: config.groq.model,
             messages: [
@@ -98,92 +72,47 @@ class AIServiceManager {
             max_tokens: config.groq.maxTokens,
             temperature: config.groq.temperature
         });
-
-        return {
-            text: completion.choices[0].message.content,
-            provider: 'groq',
-            model: config.groq.model
-        };
+        return completion.choices[0].message.content;
     }
 
-    async generateWithGoogle(prompt, context) {
-        const systemPrompt = `Kamu adalah 7A Intelligence (7AI), asisten AI untuk kelas 7A SMP.
-        ${context}
-        
-        Jawablah pertanyaan berikut dengan ramah dan edukatif dalam bahasa Indonesia:`;
-        
-        const fullPrompt = `${systemPrompt}\n\nPertanyaan: ${prompt}`;
-        
+    async generateWithGoogle(prompt) {
+        const systemPrompt = 'Kamu adalah 7A Intelligence (7AI), asisten AI untuk kelas 7A SMP. Ramah, edukatif, bahasa Indonesia santai.';
         const model = this.googleClients[this.currentGoogleIndex];
-        const result = await model.generateContent(fullPrompt);
+        const result = await model.generateContent(`${systemPrompt}\n\nPertanyaan: ${prompt}`);
         const response = await result.response;
-        
-        return {
-            text: response.text(),
-            provider: 'google',
-            model: config.googleAI.model
-        };
+        return response.text();
     }
 
-    async generateResponse(prompt, context = '') {
+    async generateResponse(prompt) {
         let lastError = null;
-        const maxAttempts = 4; // Try each provider twice max
+        const maxAttempts = this.groqKeys.length + this.googleKeys.length;
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
-                let result;
-                
-                // Try current provider
-                if (this.currentProvider === 'groq') {
-                    result = await this.generateWithGroq(prompt, context);
+                let text;
+                if (this.currentProvider === 'groq' && this.groqKeys.length > 0) {
+                    text = await this.generateWithGroq(prompt);
                     this.providerStats.groq.success++;
-                    this.providerStats.groq.lastUsed = new Date();
-                } else {
-                    result = await this.generateWithGoogle(prompt, context);
+                    return { text, provider: 'groq' };
+                } else if (this.currentProvider === 'google' && this.googleKeys.length > 0) {
+                    text = await this.generateWithGoogle(prompt);
                     this.providerStats.google.success++;
-                    this.providerStats.google.lastUsed = new Date();
+                    return { text, provider: 'google' };
                 }
-                
-                console.log(`✅ AI Response from ${result.provider} (${result.model})`);
-                return result.text;
-
             } catch (error) {
                 lastError = error;
-                
                 if (this.currentProvider === 'groq') {
                     this.providerStats.groq.failed++;
-                    
-                    // Check if rate limited
-                    if (error.status === 429 || (error.error?.code === 'rate_limit_exceeded')) {
-                        console.log(`⚠️ Groq rate limit hit on key #${this.currentGroqIndex + 1}`);
-                        this.rotateGroqKey();
-                    }
+                    if (error.status === 429) this.rotateGroqKey();
                 } else {
                     this.providerStats.google.failed++;
-                    
-                    // Check if quota exceeded
-                    if (error.status === 429 || error.message?.includes('quota')) {
-                        console.log(`⚠️ Google AI quota exceeded on key #${this.currentGoogleIndex + 1}`);
-                        this.rotateGoogleKey();
-                    }
+                    if (error.status === 429) this.rotateGoogleKey();
                 }
-                
-                console.error(`❌ ${this.currentProvider.toUpperCase()} Error (attempt ${attempt + 1}):`, error.message);
-                
-                // Switch provider for next attempt
-                await this.switchProvider();
+                this.switchProvider();
             }
         }
 
-        // If all attempts failed
-        const stats = `
-📊 *AI Service Stats*:
-   Groq: ✅ ${this.providerStats.groq.success} | ❌ ${this.providerStats.groq.failed}
-   Google: ✅ ${this.providerStats.google.success} | ❌ ${this.providerStats.google.failed}
-        `.trim();
-        
-        console.error(stats);
-        throw new Error(`Semua penyedia AI mengalami error. Error terakhir: ${lastError.message}\n\n${stats}`);
+        throw new Error(`Semua AI provider gagal. Error: ${lastError.message}`);
     }
 
     getProviderInfo() {
