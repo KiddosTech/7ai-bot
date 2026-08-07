@@ -7,24 +7,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 export const config = {
-    botName: '7A Intelligence (7AI)',
+    botName: process.env.BOT_NAME || '7A Intelligence (7AI)',
     version: '2.0.0',
     groq: {
         apiKeys: [
-            process.env.GROQ_API_KEY_1 || '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',
-            process.env.GROQ_API_KEY_2 || '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'
+            process.env.GROQ_API_KEY_1,
+            process.env.GROQ_API_KEY_2
         ].filter(Boolean),
         model: 'mixtral-8x7b-32768',
         maxTokens: 1024,
         temperature: 0.7
     },
+    googleAI: {
+        apiKeys: [
+            process.env.GOOGLE_AI_API_KEY_1,
+            process.env.GOOGLE_AI_API_KEY_2
+        ].filter(k => k && k !== 'your_google_key_2_here'),
+        model: 'gemini-pro',
+        maxTokens: 1024,
+        temperature: 0.7
+    },
+    aiProvider: process.env.AI_PROVIDER_PRIORITY || 'auto',
     admin: {
         rootNumber: process.env.ADMIN_NUMBER || '6282342067571@s.whatsapp.net',
         password: process.env.ADMIN_PASSWORD || 'Ilham2013'
     },
     database: {
-        usersPath: join(__dirname, 'database', 'users.json'),
-        configPath: join(__dirname, 'database', 'config.json')
+        usersPath: process.env.DATABASE_PATH || join(__dirname, 'database', 'users.json'),
+        configPath: process.env.CONFIG_PATH || join(__dirname, 'database', 'config.json')
     },
     aiLimits: {
         'root_admin': Infinity,
@@ -41,4 +51,4 @@ export const config = {
     },
     timezone: 'Asia/Jakarta',
     gamePoints: 5
-};
+}
