@@ -14,27 +14,47 @@ import express from 'express';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ==================== EXPRESS SERVER ====================
+const app = express();
+const PORT = process.env.PORT || 3000;
+let botStartTime = Date.now();
+
+app.get('/', (req, res) => {
+    const info = aiService.getProviderInfo();
+    res.json({
+        status: 'online',
+        bot: config.botName,
+        version: config.version,
+        provider: info.current,
+        uptime: Math.floor((Date.now() - botStartTime) / 1000),
+        timestamp: new Date().toISOString()
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
+
 // ==================== GLOBAL STATE ====================
 const authenticatedAdmins = new Map();
 const broadcastQueue = [];
 let targetGroupId = null;
 let sock = null;
-let botStartTime = Date.now();
 
 // ==================== YOUR ADMIN NUMBER ====================
-const YOUR_NUMBER = '195855541919984@s.whatsapp.net';
+const YOUR_NUMBER = config.admin.rootNumber;
 const YOUR_NAME = 'Root Admin';
 
-// ==================== LOGGER SETUP ====================
+// ==================== LOGGER ====================
 const logger = pino({ level: 'silent' });
 
 const consoleLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' });
-    const emoji = { info: '📘', success: '✅', error: '❌', warning: '⚠️', ai: '🤖', cron: '🕐', broadcast: '📢' };
+    const emoji = { info: '📘', success: '✅', error: '❌', warning: '⚠️', ai: '🤖', cron: '🕐', game: '🎮', register: '📝' };
     console.log(`${emoji[type] || '📘'} [${timestamp}] ${message}`);
 };
 
-// ==================== DATABASE INITIALIZATION ====================
+// ==================== DATABASE ====================
 async function initializeDatabase() {
     try {
         const dbDir = path.join(__dirname, 'database');
@@ -44,13 +64,14 @@ async function initializeDatabase() {
         targetGroupId = appConfig.targetGroupId;
         consoleLog('Database initialized', 'success');
     } catch (error) {
-        consoleLog(`Database error: ${error.message}`, 'error');
+        consoleLog('DB Error: ' + error.message, 'error');
     }
 }
 
-// ==================== HELPER FUNCTIONS ====================
-function isAuthenticated(userId) {
+// ==================== HELPERS ====================
+function isAdmin(userId) {
     if (userId === YOUR_NUMBER) return true;
+    if (userId === config.admin.rootNumber) return true;
     if (!authenticatedAdmins.has(userId)) return false;
     const session = authenticatedAdmins.get(userId);
     if (Date.now() > session.sessionExpiry) {
@@ -60,40 +81,35 @@ function isAuthenticated(userId) {
     return true;
 }
 
-function isAdmin(userId) {
-    if (userId === YOUR_NUMBER) return true;
-    if (userId === config.admin.rootNumber) return true;
-    return isAuthenticated(userId);
-}
-
-async function getUserRole(userId) {
-    if (userId === YOUR_NUMBER) return 'root_admin';
-    const user = await db.getUser(userId);
-    return user ? user.role : 'member';
-}
-
 async function getUserData(userId) {
     let user = await db.getUser(userId);
     if (!user) {
         const defaultRole = userId === YOUR_NUMBER ? 'root_admin' : 'member';
         const defaultName = userId === YOUR_NUMBER ? YOUR_NAME : 'Siswa 7A';
         const defaultPoints = userId === YOUR_NUMBER ? 999999 : 0;
-        user = await db.createUser(userId, { 
-            name: defaultName, 
-            role: defaultRole, 
-            points: defaultPoints 
-        });
+        user = await db.createUser(userId, { name: defaultName, role: defaultRole, points: defaultPoints });
+        consoleLog(`User baru: ${formatNumber(userId)}`, 'register');
+        if (userId !== YOUR_NUMBER && sock) {
+            sock.sendMessage(userId, { text: `👋 *Selamat datang di 7AI!*\n\nKamu otomatis terdaftar sebagai *Member*.\n\n📋 Ketik *!menu* untuk lihat fitur.\n🎮 Ketik *!kuis* untuk main game dapat poin!\n🤖 Ketik *!ai <pertanyaan>* untuk tanya AI.\n\n💰 Limit AI: 5x/hari\n💎 Upgrade ke VIP untuk limit lebih besar!` }).catch(() => {});
+        }
     }
     return user;
 }
 
-function formatNumber(jid) {
-    return jid.split('@')[0];
-}
+function formatNumber(jid) { return jid.split('@')[0]; }
 
 function parseMention(text) {
     const match = text.match(/@(\d+)/);
     return match ? `${match[1]}@s.whatsapp.net` : null;
+}
+
+async function resolveUser(input) {
+    if (!input) return null;
+    if (input.startsWith('@')) return parseMention(input);
+    if (input.includes('@s.whatsapp.net')) return input;
+    const user = await db.getUserByUsername(input);
+    if (user) return user.id;
+    return input.includes('@') ? input : input + '@s.whatsapp.net';
 }
 
 function getCurrentTime() {
@@ -104,356 +120,271 @@ function getCurrentDate() {
     return new Date().toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 }
 
-// ==================== COMMAND HANDLERS ====================
+// ==================== COMMANDS ====================
 const commands = {
     menu: async (userId) => {
         const user = await getUserData(userId);
-        const isUserAdmin = isAdmin(userId);
-        
-        let text = `🤖 *7A INTELLIGENCE (7AI) v2.0.0*\n`;
-        text += `📅 ${getCurrentDate()} | 🕐 ${getCurrentTime()} WIB\n\n`;
-        text += `👤 *${user.name}*\n`;
-        text += `⭐ Role: ${user.role.toUpperCase()}\n`;
-        text += `💰 Poin: ${user.points}\n`;
-        text += `━━━━━━━━━━━━━━━━━━\n\n`;
-        text += `📋 *MENU UTAMA*\n\n`;
-        text += `🤖 !ai <pertanyaan> - Tanya AI\n`;
-        text += `👤 !profile - Lihat profil (Japri)\n`;
-        text += `💰 !poin - Cek poin (Japri)\n`;
-        text += `🎮 !kuis - Main kuis (+10 Poin)\n`;
-        text += `📊 !leaderboard - Top 10 poin\n`;
-        text += `💎 !claimvip - Klaim Real VIP (Japri)\n`;
-        text += `⚡ !buyvip - Info VIP Fast-Track (Japri)\n`;
-        
-        if (isUserAdmin) {
-            text += `\n👑 *ADMIN COMMANDS*\n`;
-            text += `🔐 !login <user> <pass> - Login Admin\n`;
-            text += `📢 !broadcast <pesan> - Kirim pengumuman\n`;
-            text += `⚙️ !setgroup - Set grup utama (di grup)\n`;
-            text += `👥 !setrole @user <role> - Ubah role\n`;
-            text += `💎 !addvip @user <hari> - Tambah VIP\n`;
-            text += `🚫 !banned @user - Ban user\n`;
-            text += `✅ !unban @user - Unban user\n`;
-            text += `💰 !addpoint @user <jumlah> - Tambah poin\n`;
-            text += `🔄 !resetlimit - Reset limit AI\n`;
-            text += `🤖 !aistatus - Cek status AI\n`;
-            text += `✅ !acc <id> - Setujui broadcast\n`;
-            text += `❌ !reject <id> - Tolak broadcast\n`;
-        }
-        
-        text += `\n🕐 Reset limit & VIP: 00:00 WIB`;
-        return text;
+        const adminMenu = isAdmin(userId) ? `\n👑 *ADMIN*\n📢 !broadcast <pesan>\n⚙️ !setgroup\n👥 !setrole <user/username> <role>\n💎 !addvip <user/username> <hari>\n🚫 !banned <user/username>\n✅ !unban <user/username>\n💰 !addpoint <user/username> <jumlah>\n🔄 !resetlimit\n🤖 !aistatus\n✅ !acc <id>\n❌ !reject <id>` : '';
+        return `🤖 *${config.botName}* v${config.version}\n📅 ${getCurrentDate()} | 🕐 ${getCurrentTime()} WIB\n\n👤 *${user.name}*\n⭐ Role: ${user.role.toUpperCase()}\n💰 Poin: ${user.points}\n━━━━━━━━━━━━━━━━━━\n\n📋 *MENU*\n🤖 !ai <tanya>\n👤 !profile (Japri)\n💰 !poin (Japri)\n🎮 !kuis (+${config.gamePoints} poin)\n📊 !leaderboard\n💎 !claimvip (Japri)\n⚡ !buyvip (Japri)\n🔐 !login <user> <pass> (Japri)\n👤 !setusername <name>${adminMenu}\n\n🕐 Reset: 00:00 WIB`;
     },
 
     profile: async (userId, chatType) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
-
+        if (chatType !== 'private') return '⚠️ Gunakan via Chat Pribadi (Japri)!';
         const user = await getUserData(userId);
-        let limit = config.aiLimits[user.role] || 5;
-        if (user.vipType === 'fasttrack') limit = config.vip.fastTrack.dailyLimit;
-        else if (user.vipType === 'real_vip') limit = Math.max(Math.floor(config.vip.realVip.limitPercentage * user.points), config.aiLimits.real_vip);
-        if (user.role === 'root_admin' || user.role === 'admin' || user.role === 'operational_admin') limit = '∞';
-
-        let text = `👤 *PROFIL 7AI*\n\n`;
-        text += `📱 Nomor: ${formatNumber(userId)}\n`;
-        text += `📝 Nama: ${user.name}\n`;
-        text += `⭐ Role: ${user.role.toUpperCase()}\n`;
-        text += `💎 VIP: ${user.vipType === 'none' ? '❌ Tidak Aktif' : `✅ ${user.vipType}`}\n`;
-        if (user.vipType === 'fasttrack' && user.vipExpiredAt) {
-            text += `📅 Expired: ${new Date(user.vipExpiredAt).toLocaleDateString('id-ID')}\n`;
-        }
-        text += `💰 Poin: ${user.points}\n`;
-        text += `🤖 AI Used: ${user.aiUsedToday}/${limit}\n`;
-        text += `🚫 Status: ${user.isBanned ? '🔴 Dibanned' : '🟢 Aktif'}`;
+        let limit = (user.role === 'root_admin' || user.role === 'admin' || user.role === 'operational_admin') ? '∞' : (config.aiLimits[user.role] || 5);
+        let text = `👤 *PROFIL 7AI*\n\n📱 Nomor: ${formatNumber(userId)}\n`;
+        if (user.username) text += `👤 Username: @${user.username}\n`;
+        text += `📝 Nama: ${user.name}\n⭐ Role: ${user.role.toUpperCase()}\n💎 VIP: ${user.vipType === 'none' ? '❌ Tidak Aktif' : '✅ ' + user.vipType}\n`;
+        if (user.vipType === 'fasttrack' && user.vipExpiredAt) text += `📅 Expired: ${new Date(user.vipExpiredAt).toLocaleDateString('id-ID')}\n`;
+        text += `💰 Poin: ${user.points}\n🤖 AI: ${user.aiUsedToday}/${limit}\n📅 Terdaftar: ${new Date(user.registeredAt).toLocaleDateString('id-ID')}\n🚫 Status: ${user.isBanned ? '🔴 Dibanned' : '🟢 Aktif'}`;
         return text;
     },
 
     poin: async (userId, chatType) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
+        if (chatType !== 'private') return '⚠️ Gunakan via Chat Pribadi (Japri)!';
         const user = await getUserData(userId);
-        return `💰 *SALDO POIN*\n\n👤 ${user.name}\n💎 Poin: ${user.points}\n⭐ Role: ${user.role.toUpperCase()}\n\n💡 Main !kuis untuk dapat poin!\n🎯 100 Poin = Real VIP`;
-    },
-
-    leaderboard: async () => {
-        const users = await db.getAllUsers();
-        const sorted = Object.entries(users)
-            .sort(([, a], [, b]) => (b.points || 0) - (a.points || 0))
-            .slice(0, 10);
-
-        if (sorted.length === 0) return '📊 *LEADERBOARD*\n\nBelum ada data poin.';
-
-        let text = `📊 *TOP 10 POIN TERTINGGI*\n━━━━━━━━━━━━━━━━━━\n\n`;
-        sorted.forEach(([userId, user], index) => {
-            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-            text += `${medal} *${user.name}*\n   💰 ${user.points} poin | ⭐ ${user.role}\n\n`;
-        });
-        return text;
+        return `💰 *SALDO POIN*\n\n👤 ${user.name}\n💎 Poin: ${user.points}\n⭐ Role: ${user.role.toUpperCase()}\n\n💡 Main !kuis untuk dapat ${config.gamePoints} poin!\n🎯 100 Poin = Real VIP`;
     },
 
     login: async (userId, chatType, args) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
-
-        if (userId === YOUR_NUMBER) {
-            return '✅ Anda adalah Root Admin permanen! Tidak perlu login.\n\nGunakan langsung command admin.';
-        }
-
+        if (chatType !== 'private') return '⚠️ Gunakan via Chat Pribadi (Japri)!';
+        if (userId === YOUR_NUMBER) return '✅ Anda Root Admin permanen! Tidak perlu login.';
         const [username, password] = args;
         if (!username || !password) return '❌ Format: !login <username> <password>';
-
         if (password !== config.admin.password) return '❌ Password salah!';
-
-        const sessionData = {
-            username,
-            timestamp: Date.now(),
-            sessionExpiry: Date.now() + (3600000 * 24)
-        };
+        const sessionData = { username, timestamp: Date.now(), sessionExpiry: Date.now() + (3600000 * 24) };
         authenticatedAdmins.set(userId, sessionData);
-        
-        await db.createUser(userId, { name: username, role: 'operational_admin' });
-        consoleLog(`Admin login: ${formatNumber(userId)}`, 'success');
-
+        await db.updateUser(userId, { username: username, role: 'operational_admin' });
+        consoleLog(`Admin login: ${formatNumber(userId)} as ${username}`, 'success');
         return `✅ *LOGIN BERHASIL!*\n\n👤 Username: ${username}\n⭐ Role: Operational Admin\n⏰ Expired: ${new Date(sessionData.sessionExpiry).toLocaleString('id-ID')}\n\nGunakan !menu untuk lihat command admin.`;
     },
 
     ai: async (userId, chatType, args) => {
         const prompt = args.join(' ');
-        if (!prompt) return '❌ Format: !ai <pertanyaan>\n\nContoh: !ai jelaskan tentang fotosintesis';
-
+        if (!prompt) return '❌ Format: !ai <pertanyaan>';
         const user = await getUserData(userId);
-        if (user.isBanned) return '🚫 Akun Anda dibanned.';
-
-        let limit = config.aiLimits[user.role] || 5;
+        if (user.isBanned) return '🚫 Akun dibanned!';
+        let limit = (user.role === 'root_admin' || user.role === 'admin' || user.role === 'operational_admin') ? Infinity : (config.aiLimits[user.role] || 5);
         if (user.vipType === 'fasttrack') limit = config.vip.fastTrack.dailyLimit;
         else if (user.vipType === 'real_vip') limit = Math.max(Math.floor(config.vip.realVip.limitPercentage * user.points), config.aiLimits.real_vip);
-        if (user.role === 'root_admin' || user.role === 'admin' || user.role === 'operational_admin') limit = Infinity;
-
-        if (user.aiUsedToday >= limit && limit !== Infinity) {
-            return `⚠️ *LIMIT AI HARIAN HABIS!*\n\n📊 ${user.aiUsedToday}/${limit}\n🕐 Reset: 00:00 WIB\n\n💡 Upgrade ke VIP: !buyvip`;
-        }
-
+        if (user.aiUsedToday >= limit && limit !== Infinity) return `⚠️ *LIMIT AI HABIS!*\n\n📊 ${user.aiUsedToday}/${limit}\n🕐 Reset: 00:00 WIB\n\n💡 Upgrade ke VIP: !buyvip`;
         try {
-            const response = await aiService.generateResponse(prompt, `Kelas 7A SMP`);
-            const newUsage = (user.aiUsedToday || 0) + 1;
-            await db.updateUser(userId, { aiUsedToday: newUsage });
-            const provider = aiService.getProviderInfo().current.toUpperCase();
-            
-            return `🤖 *7AI RESPONSE* (via ${provider})\n\n${response}\n\n━━━━━━━━━━━━━━━━━━\n📊 AI Usage: ${newUsage}/${limit === Infinity ? '∞' : limit}`;
+            const result = await aiService.generateResponse(prompt);
+            await db.updateUser(userId, { aiUsedToday: (user.aiUsedToday || 0) + 1 });
+            return `🤖 *7AI RESPONSE* (via ${result.provider.toUpperCase()})\n\n${result.text}\n\n📊 AI: ${(user.aiUsedToday || 0) + 1}/${limit === Infinity ? '∞' : limit}`;
         } catch (error) {
-            return `❌ *AI ERROR*\n\n${error.message}\n\nCoba lagi nanti.`;
+            return `❌ AI Error: ${error.message}`;
         }
-    },
-
-    aistatus: async (userId) => {
-        if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        
-        const info = aiService.getProviderInfo();
-        return `🤖 *AI STATUS*\n\n🔄 Provider: ${info.current.toUpperCase()}\n📊 Groq: ✅${info.stats.groq.success} ❌${info.stats.groq.failed}\n📊 Google: ✅${info.stats.google.success} ❌${info.stats.google.failed}`;
-    },
-
-    setgroup: async (userId, chatType, args, context) => {
-        if (!isAdmin(userId)) return '❌ Hanya Admin!';
-
-        if (chatType !== 'group') {
-            return '⚠️ Perintah ini hanya bisa digunakan di dalam grup!\n\n1. Masuk ke grup\n2. Ketik !setgroup';
-        }
-
-        if (context && context.groupId) {
-            targetGroupId = context.groupId;
-            await db.updateConfig({ targetGroupId: context.groupId });
-            consoleLog(`Target group set: ${context.groupId}`, 'success');
-            
-            try {
-                const groupMeta = await sock.groupMetadata(context.groupId);
-                return `✅ *GRUP UTAMA BERHASIL DIATUR!*\n\n👥 Nama: ${groupMeta.subject}\n👤 Member: ${groupMeta.participants.length}\n\nSemua broadcast akan dikirim ke sini.`;
-            } catch {
-                return `✅ Grup utama berhasil diatur!\nID: ${context.groupId}`;
-            }
-        }
-        return '❌ Gagal. Pastikan di dalam grup.';
-    },
-
-    broadcast: async (userId, chatType, args) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
-
-        if (!targetGroupId) return '❌ Grup target belum diatur! Gunakan !setgroup di grup.';
-
-        const message = args.join(' ');
-        if (!message) return '❌ Format: !broadcast <pesan>';
-
-        if (isAdmin(userId)) {
-            try {
-                await sock.sendMessage(targetGroupId, { 
-                    text: `📢 *PENGUMUMAN ADMIN*\n━━━━━━━━━━━━━━━━━━\n\n${message}\n\n━━━━━━━━━━━━━━━━━━\n👤 Admin 7AI\n🕐 ${getCurrentTime()} WIB`
-                });
-                consoleLog('Admin broadcast sent', 'broadcast');
-                return '✅ Pengumuman berhasil dikirim!';
-            } catch (error) {
-                return '❌ Gagal mengirim. Bot masih di grup?';
-            }
-        }
-
-        const broadcastId = `BRC${Date.now().toString(36).toUpperCase()}`;
-        broadcastQueue.push({ id: broadcastId, userId, message, timestamp: Date.now() });
-
-        await sock.sendMessage(YOUR_NUMBER, { 
-            text: `📩 *PENGAJUAN BROADCAST*\n🆔 ${broadcastId}\n👤 ${formatNumber(userId)}\n💬 "${message}"\n\n!acc ${broadcastId} | !reject ${broadcastId}`
-        });
-
-        return `⏳ Pengajuan dikirim ke Admin.\n🆔 ID: ${broadcastId}`;
-    },
-
-    acc: async (userId, chatType, args) => {
-        if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const broadcastId = args[0];
-        if (!broadcastId) return '❌ Format: !acc <id>';
-
-        const index = broadcastQueue.findIndex(item => item.id === broadcastId);
-        if (index === -1) return '❌ Tidak ditemukan!';
-
-        const broadcast = broadcastQueue[index];
-        broadcastQueue.splice(index, 1);
-
-        await sock.sendMessage(targetGroupId, { 
-            text: `📢 *PENGUMUMAN*\n━━━━━━━━━━━━━━━━━━\n\n${broadcast.message}\n\n━━━━━━━━━━━━━━━━━━\n✅ Disetujui Admin`
-        });
-
-        await sock.sendMessage(broadcast.userId, { text: `✅ Pengajuan ${broadcastId} DISETUJUI!` });
-        return `✅ Broadcast ${broadcastId} dikirim!`;
-    },
-
-    reject: async (userId, chatType, args) => {
-        if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const broadcastId = args[0];
-        if (!broadcastId) return '❌ Format: !reject <id>';
-
-        const index = broadcastQueue.findIndex(item => item.id === broadcastId);
-        if (index === -1) return '❌ Tidak ditemukan!';
-
-        const broadcast = broadcastQueue[index];
-        broadcastQueue.splice(index, 1);
-
-        await sock.sendMessage(broadcast.userId, { text: `❌ Pengajuan ${broadcastId} DITOLAK.` });
-        return `❌ Broadcast ${broadcastId} ditolak.`;
-    },
-
-    claimvip: async (userId, chatType) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
-        const user = await getUserData(userId);
-        if (user.vipType !== 'none') return '❌ Anda sudah VIP!';
-        if (user.points < config.vip.realVip.activationCost) {
-            return `❌ Poin kurang!\n💎 Butuh: ${config.vip.realVip.activationCost}\n💰 Poin Anda: ${user.points}`;
-        }
-        const newPoints = user.points - config.vip.realVip.activationCost;
-        await db.updateUser(userId, { points: newPoints, vipType: 'real_vip', vipExpiredAt: null });
-        return `🎉 *REAL VIP AKTIF!*\n\n💰 Poin: ${newPoints}\n⚠️ Biaya: 50 poin/hari`;
-    },
-
-    buyvip: async (userId, chatType) => {
-        if (chatType !== 'private') {
-            return '⚠️ Demi keamanan, privasi, dan kenyamanan grup, perintah ini WAJIB digunakan via Chat Pribadi (Japri) langsung ke Bot 7AI!';
-        }
-        return `⚡ *VIP FAST-TRACK*\n\n💵 Rp2.000 / 2 Hari\n🤖 Limit: 25x/hari\n\n📞 Hubungi Admin: wa.me/${formatNumber(YOUR_NUMBER)}`;
     },
 
     kuis: async (userId) => {
         const questions = [
             { q: 'Apa ibu kota Indonesia?', a: 'jakarta' },
-            { q: 'Berapa 12 × 5?', a: '60' },
+            { q: 'Berapa 12 x 5?', a: '60' },
             { q: 'Siapa presiden pertama Indonesia?', a: 'soekarno' },
             { q: 'Apa lambang kimia air?', a: 'h2o' },
-            { q: 'Berapa sisi segitiga?', a: '3' }
+            { q: 'Berapa sisi segitiga?', a: '3' },
+            { q: 'Sebutkan planet terbesar!', a: 'jupiter' },
+            { q: 'Apa bahasa Inggris "sekolah"?', a: 'school' },
+            { q: 'Berapa 100 : 4?', a: '25' },
+            { q: 'Siapa penemu lampu?', a: 'thomas edison' },
+            { q: 'Apa kepanjangan NKRI?', a: 'negara kesatuan republik indonesia' }
         ];
         const random = questions[Math.floor(Math.random() * questions.length)];
-        const user = await getUserData(userId);
         await db.updateUser(userId, { lastQuestion: random.q, lastAnswer: random.a.toLowerCase(), quizActive: true });
-        return `🎮 *KUIS 7AI* (+10 Poin)\n\n❓ ${random.q}\n\n📝 Jawab langsung!\n💰 Poin: ${user.points}`;
+        const user = await getUserData(userId);
+        return `🎮 *KUIS 7AI* (+${config.gamePoints} Poin)\n\n❓ ${random.q}\n\n📝 Jawab: !hasil <jawabanmu>\n💰 Poin saat ini: ${user.points}`;
+    },
+
+    hasil: async (userId, args) => {
+        const answer = args.join(' ').toLowerCase().trim();
+        if (!answer) return '❌ Format: !hasil <jawabanmu>';
+        const user = await db.getUser(userId);
+        if (!user || !user.quizActive) return '❌ Kamu belum mulai kuis! Ketik !kuis dulu.';
+        const correctAnswer = user.lastAnswer.toLowerCase().trim();
+        const isCorrect = answer === correctAnswer || correctAnswer.includes(answer) || answer.includes(correctAnswer);
+        if (isCorrect) {
+            const newPoints = (user.points || 0) + config.gamePoints;
+            await db.updateUser(userId, { points: newPoints, lastQuestion: null, lastAnswer: null, quizActive: false });
+            consoleLog(`${formatNumber(userId)} jawab kuis benar! +${config.gamePoints} poin`, 'game');
+            return `🎉 *BENAR!* +${config.gamePoints} Poin\n\n✅ Jawaban: ${user.lastAnswer}\n💰 Total Poin: ${newPoints}\n\nKetik !kuis untuk main lagi!`;
+        } else {
+            await db.updateUser(userId, { lastQuestion: null, lastAnswer: null, quizActive: false });
+            return `❌ *SALAH!*\n\nJawaban benar: ${user.lastAnswer}\n\nKetik !kuis untuk coba lagi!`;
+        }
+    },
+
+    leaderboard: async () => {
+        const users = await db.getAllUsers();
+        const sorted = Object.entries(users).sort(([,a], [,b]) => (b.points||0) - (a.points||0)).slice(0, 10);
+        if (!sorted.length) return '📊 *LEADERBOARD*\n\nBelum ada data poin. Mainkan !kuis!';
+        let text = '📊 *TOP 10 POIN TERTINGGI*\n━━━━━━━━━━━━━━━━━━\n\n';
+        sorted.forEach(([, u], i) => {
+            const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i+1}.`;
+            text += `${medal} *${u.name}*\n   💰 ${u.points} poin | ⭐ ${u.role}\n`;
+            if (u.username) text += `   👤 @${u.username}\n`;
+            text += '\n';
+        });
+        return text;
+    },
+
+    setgroup: async (userId, chatType, args, context) => {
+        if (!isAdmin(userId)) return '❌ Hanya Admin!';
+        if (chatType !== 'group') return '⚠️ Gunakan di dalam grup!';
+        if (context?.groupId) {
+            targetGroupId = context.groupId;
+            await db.updateConfig({ targetGroupId: context.groupId });
+            const groupMeta = await sock.groupMetadata(context.groupId).catch(() => null);
+            const groupName = groupMeta ? groupMeta.subject : 'Grup';
+            return `✅ *GRUP UTAMA DIATUR!*\n\n👥 ${groupName}\n📱 ${context.groupId}`;
+        }
+        return '❌ Gagal.';
+    },
+
+    broadcast: async (userId, chatType, args) => {
+        if (chatType !== 'private') return '⚠️ Gunakan via Japri!';
+        if (!targetGroupId) return '❌ Grup belum diset! Gunakan !setgroup di grup.';
+        const message = args.join(' ');
+        if (!message) return '❌ Format: !broadcast <pesan>';
+        if (isAdmin(userId)) {
+            await sock.sendMessage(targetGroupId, { text: `📢 *PENGUMUMAN ADMIN*\n━━━━━━━━━━━━━━━━━━\n\n${message}\n\n━━━━━━━━━━━━━━━━━━\n👤 Admin 7AI\n🕐 ${getCurrentTime()} WIB` });
+            consoleLog('Admin broadcast sent', 'broadcast');
+            return '✅ Pengumuman terkirim!';
+        }
+        const broadcastId = `BRC${Date.now().toString(36).toUpperCase()}`;
+        broadcastQueue.push({ id: broadcastId, userId, message });
+        await sock.sendMessage(YOUR_NUMBER, { text: `📩 *PENGAJUAN BROADCAST*\n🆔 ${broadcastId}\n👤 ${formatNumber(userId)}\n💬 "${message}"\n\n✅ !acc ${broadcastId}\n❌ !reject ${broadcastId}` });
+        return `⏳ Pengajuan dikirim ke Admin. ID: ${broadcastId}`;
+    },
+
+    acc: async (userId, chatType, args) => {
+        if (!isAdmin(userId)) return '❌ Hanya Admin!';
+        const id = args[0];
+        const index = broadcastQueue.findIndex(i => i.id === id);
+        if (index === -1) return '❌ Tidak ditemukan!';
+        const bc = broadcastQueue[index];
+        broadcastQueue.splice(index, 1);
+        await sock.sendMessage(targetGroupId, { text: `📢 *PENGUMUMAN*\n\n${bc.message}\n\n✅ Disetujui Admin` });
+        await sock.sendMessage(bc.userId, { text: `✅ Pengajuan ${id} DISETUJUI & dikirim!` });
+        return `✅ Broadcast ${id} dikirim!`;
+    },
+
+    reject: async (userId, chatType, args) => {
+        if (!isAdmin(userId)) return '❌ Hanya Admin!';
+        const id = args[0];
+        const index = broadcastQueue.findIndex(i => i.id === id);
+        if (index === -1) return '❌ Tidak ditemukan!';
+        const bc = broadcastQueue[index];
+        broadcastQueue.splice(index, 1);
+        await sock.sendMessage(bc.userId, { text: `❌ Pengajuan ${id} DITOLAK Admin.` });
+        return `❌ Broadcast ${id} ditolak.`;
+    },
+
+    claimvip: async (userId, chatType) => {
+        if (chatType !== 'private') return '⚠️ Gunakan via Japri!';
+        const user = await getUserData(userId);
+        if (user.vipType !== 'none') return '❌ Anda sudah VIP!';
+        if (user.points < 100) return `❌ Poin kurang! Butuh 100. Poin: ${user.points}`;
+        await db.updateUser(userId, { points: user.points - 100, vipType: 'real_vip' });
+        consoleLog(`${formatNumber(userId)} klaim Real VIP`, 'success');
+        return `🎉 *REAL VIP AKTIF!*\n\n💰 Poin: ${user.points - 100}\n🤖 Limit: 50% poin (min. 50/hari)\n⚠️ Biaya: 50 poin/hari\n\nTetap main !kuis ya!`;
+    },
+
+    buyvip: async (userId, chatType) => {
+        if (chatType !== 'private') return '⚠️ Gunakan via Japri!';
+        return `⚡ *VIP FAST-TRACK*\n\n💵 Biaya: Rp2.000 / 2 Hari\n🤖 Limit: 25x/hari\n⏱️ Durasi: 2 Hari\n\n📋 Cara Beli:\n1. Transfer Rp2.000 ke Admin\n2. Konfirmasi ke Admin\n3. Admin aktifkan dengan !addvip\n\n📞 wa.me/${formatNumber(YOUR_NUMBER)}`;
     },
 
     setrole: async (userId, chatType, args) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const [targetMention, newRole] = args;
-        if (!targetMention || !newRole) return '❌ Format: !setrole @user <officer/member/admin>';
-        const targetId = parseMention(targetMention);
-        if (!targetId) return '❌ Format mention salah!';
-        if (!['officer', 'member', 'admin', 'operational_admin'].includes(newRole.toLowerCase())) {
-            return '❌ Role tidak valid! Pilih: officer, member, admin';
-        }
+        const [target, newRole] = args;
+        if (!target || !newRole) return '❌ Format: !setrole <@user/username> <officer/member/admin>\n\nContoh:\n!setrole @6281234567890 officer\n!setrole budi officer';
+        const validRoles = ['officer', 'member', 'admin', 'operational_admin'];
+        if (!validRoles.includes(newRole.toLowerCase())) return `❌ Role tidak valid! Pilih: ${validRoles.join(', ')}`;
+        const targetId = await resolveUser(target);
+        if (!targetId) return '❌ User tidak ditemukan!';
         await db.createUser(targetId);
         await db.updateUser(targetId, { role: newRole.toLowerCase() });
-        return `✅ Role @${formatNumber(targetId)} diubah ke *${newRole.toUpperCase()}*!`;
+        consoleLog(`${formatNumber(userId)} set role ${newRole} → ${formatNumber(targetId)}`, 'success');
+        await sock.sendMessage(targetId, { text: `🎉 Role kamu diubah jadi *${newRole.toUpperCase()}*!\n\nCek !profile untuk lihat perubahan.` }).catch(() => {});
+        return `✅ ${formatNumber(targetId)} → *${newRole.toUpperCase()}*!`;
     },
 
     addvip: async (userId, chatType, args) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const [targetMention, duration] = args;
-        if (!targetMention || !duration) return '❌ Format: !addvip @user <hari>';
-        const targetId = parseMention(targetMention);
-        if (!targetId) return '❌ Format mention salah!';
+        const [target, duration] = args;
+        if (!target || !duration) return '❌ Format: !addvip <@user/username> <hari>\n\nContoh:\n!addvip @6281234567890 2\n!addvip budi 2';
+        const targetId = await resolveUser(target);
         const days = parseInt(duration);
-        if (isNaN(days) || days < 1) return '❌ Durasi harus angka!';
+        if (!targetId || isNaN(days) || days < 1) return '❌ Format salah!';
         const expiryDate = new Date(Date.now() + days * 86400000);
         await db.createUser(targetId);
         await db.updateUser(targetId, { vipType: 'fasttrack', vipExpiredAt: expiryDate.toISOString() });
-        return `⚡ VIP Fast-Track untuk @${formatNumber(targetId)} selama *${days} hari*!\n📅 Expired: ${expiryDate.toLocaleDateString('id-ID')}`;
+        await sock.sendMessage(targetId, { text: `🎉 *VIP FAST-TRACK AKTIF!*\n\n⚡ Durasi: ${days} hari\n📅 Expired: ${expiryDate.toLocaleDateString('id-ID')}\n🤖 Limit: 25x/hari\n\nSelamat menikmati!` }).catch(() => {});
+        return `⚡ VIP Fast-Track → ${formatNumber(targetId)} selama *${days} hari*!\n📅 Expired: ${expiryDate.toLocaleDateString('id-ID')}`;
     },
 
     banned: async (userId, chatType, args) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const targetMention = args[0];
-        if (!targetMention) return '❌ Format: !banned @user';
-        const targetId = parseMention(targetMention);
-        if (!targetId) return '❌ Format mention salah!';
+        const target = args[0];
+        if (!target) return '❌ Format: !banned <@user/username>';
+        const targetId = await resolveUser(target);
+        if (!targetId) return '❌ User tidak ditemukan!';
         await db.createUser(targetId);
         await db.updateUser(targetId, { isBanned: true });
-        return `🚫 @${formatNumber(targetId)} dibanned!`;
+        consoleLog(`${formatNumber(userId)} banned ${formatNumber(targetId)}`, 'warning');
+        return `🚫 ${formatNumber(targetId)} *DIBANNED!*`;
     },
 
     unban: async (userId, chatType, args) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const targetMention = args[0];
-        if (!targetMention) return '❌ Format: !unban @user';
-        const targetId = parseMention(targetMention);
-        if (!targetId) return '❌ Format mention salah!';
+        const target = args[0];
+        if (!target) return '❌ Format: !unban <@user/username>';
+        const targetId = await resolveUser(target);
+        if (!targetId) return '❌ User tidak ditemukan!';
         await db.createUser(targetId);
         await db.updateUser(targetId, { isBanned: false });
-        return `✅ @${formatNumber(targetId)} di-unban!`;
+        await sock.sendMessage(targetId, { text: '✅ Kamu telah di-unban! Bisa pakai bot lagi.' }).catch(() => {});
+        return `✅ ${formatNumber(targetId)} *DI-UNBAN!*`;
     },
 
     addpoint: async (userId, chatType, args) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
-        const [targetMention, points] = args;
-        if (!targetMention || !points) return '❌ Format: !addpoint @user <jumlah>';
-        const targetId = parseMention(targetMention);
-        if (!targetId) return '❌ Format mention salah!';
-        const pointAmount = parseInt(points);
-        if (isNaN(pointAmount)) return '❌ Jumlah harus angka!';
-        await db.createUser(targetId);
-        const user = await db.getUser(targetId);
-        const newPoints = (user.points || 0) + pointAmount;
+        const [target, points] = args;
+        if (!target || !points) return '❌ Format: !addpoint <@user/username> <jumlah>\n\nContoh:\n!addpoint @6281234567890 50\n!addpoint budi 50';
+        const targetId = await resolveUser(target);
+        if (!targetId || isNaN(parseInt(points))) return '❌ Format salah!';
+        const user = await db.getUser(targetId) || await db.createUser(targetId);
+        const newPoints = (user.points || 0) + parseInt(points);
         await db.updateUser(targetId, { points: newPoints });
-        return `✅ ${pointAmount} poin ke @${formatNumber(targetId)}!\n💰 Total: ${newPoints}`;
+        await sock.sendMessage(targetId, { text: `💰 *+${points} Poin!*\n\nTotal: ${newPoints} poin\n\nCek !poin` }).catch(() => {});
+        return `✅ +${points} poin → ${formatNumber(targetId)}! Total: ${newPoints}`;
+    },
+
+    setusername: async (userId, chatType, args) => {
+        const username = args[0];
+        if (!username) return '❌ Format: !setusername <nama>';
+        if (username.length < 3) return '❌ Minimal 3 karakter!';
+        const existing = await db.getUserByUsername(username);
+        if (existing && existing.id !== userId) return '❌ Username sudah dipakai!';
+        await db.updateUser(userId, { username: username.toLowerCase() });
+        return `✅ Username: *@${username.toLowerCase()}*`;
     },
 
     resetlimit: async (userId) => {
         if (!isAdmin(userId)) return '❌ Hanya Admin!';
         let count = 0;
         await db.bulkUpdateUsers(users => {
-            Object.keys(users).forEach(key => {
-                if (users[key].aiUsedToday > 0) { users[key].aiUsedToday = 0; count++; }
-            });
+            Object.keys(users).forEach(k => { if (users[k].aiUsedToday > 0) { users[k].aiUsedToday = 0; count++; } });
             return users;
         });
         return `✅ Limit ${count} user direset!`;
+    },
+
+    aistatus: async (userId) => {
+        if (!isAdmin(userId)) return '❌ Hanya Admin!';
+        const info = aiService.getProviderInfo();
+        return `🤖 *AI STATUS*\n\n🔄 Provider: ${info.current.toUpperCase()}\n📊 Prioritas: ${info.priority}\n\n🔹 *Groq:* ✅${info.stats.groq.success} | ❌${info.stats.groq.failed} | Keys: ${info.groqKeys}\n🔹 *Google:* ✅${info.stats.google.success} | ❌${info.stats.google.failed} | Keys: ${info.googleKeys}`;
     }
 };
 
@@ -463,41 +394,29 @@ async function handleMessage(message) {
         const { key, message: msg } = message;
         const userId = key.remoteJid;
         if (key.fromMe) return;
-        
+
         const chatType = userId.endsWith('@g.us') ? 'group' : 'private';
-        const text = msg?.conversation || msg?.extendedTextMessage?.text || msg?.imageMessage?.caption || '';
-        
+        const text = msg?.conversation || msg?.extendedTextMessage?.text || '';
+
+        // Auto-register & update name
+        const user = await getUserData(userId);
+        if (msg?.pushName && user.name === 'Siswa 7A' && userId !== YOUR_NUMBER) {
+            await db.updateUser(userId, { name: msg.pushName });
+        }
+
         if (!text || !text.startsWith('!')) return;
 
         const [command, ...args] = text.slice(1).split(' ');
         const handler = commands[command.toLowerCase()];
 
         if (handler) {
-            const response = await handler(userId, chatType, args, {
-                groupId: chatType === 'group' ? userId : null
-            });
-            if (response) {
-                await sock.sendMessage(userId, { text: response }, { quoted: message });
-            }
-        } else {
-            const user = await db.getUser(userId);
-            if (user && user.quizActive && user.lastQuestion) {
-                const answer = text.slice(1).toLowerCase().trim();
-                const correctAnswer = user.lastAnswer.toLowerCase().trim();
-                const isCorrect = answer === correctAnswer || correctAnswer.includes(answer) || answer.includes(correctAnswer);
-                
-                if (isCorrect) {
-                    const newPoints = (user.points || 0) + 10;
-                    await db.updateUser(userId, { points: newPoints, lastQuestion: null, lastAnswer: null, quizActive: false });
-                    await sock.sendMessage(userId, { text: `🎉 *BENAR!* +10 Poin\n💰 Total: ${newPoints}\n\nKetik !kuis lagi!` }, { quoted: message });
-                } else {
-                    await db.updateUser(userId, { lastQuestion: null, lastAnswer: null, quizActive: false });
-                    await sock.sendMessage(userId, { text: `❌ *SALAH!*\nJawaban: ${user.lastAnswer}\n\n!kuis untuk coba lagi.` }, { quoted: message });
-                }
+            const response = await handler(userId, chatType, args, { groupId: chatType === 'group' ? userId : null });
+            if (response && sock) {
+                await sock.sendMessage(userId, { text: response });
             }
         }
     } catch (error) {
-        consoleLog(`Handler error: ${error.message}`, 'error');
+        consoleLog('Handler error: ' + error.message, 'error');
     }
 }
 
@@ -505,130 +424,111 @@ async function handleMessage(message) {
 function setupCronJobs() {
     cron.schedule('0 17 * * *', async () => {
         consoleLog('Daily reset (00:00 WIB)...', 'cron');
-        try {
-            await db.bulkUpdateUsers(users => {
-                Object.keys(users).forEach(userId => {
-                    const user = users[userId];
-                    user.aiUsedToday = 0;
-                    if (user.vipType === 'real_vip') {
-                        user.points = Math.max(0, (user.points || 0) - 50);
-                        if (user.points < 50) {
-                            user.vipType = 'none';
-                            user.vipExpiredAt = null;
-                        }
+        let realVIPLost = 0;
+        let fastTrackExpired = 0;
+        let limitsReset = 0;
+
+        await db.bulkUpdateUsers(users => {
+            Object.keys(users).forEach(uid => {
+                const u = users[uid];
+                if (u.aiUsedToday > 0) { u.aiUsedToday = 0; limitsReset++; }
+                if (u.vipType === 'real_vip') {
+                    u.points = Math.max(0, (u.points || 0) - 50);
+                    if (u.points < 50) {
+                        u.vipType = 'none';
+                        realVIPLost++;
+                        if (sock) sock.sendMessage(uid, { text: '⚠️ *REAL VIP DICABUT*\n\nPoin tidak cukup untuk biaya harian (50 poin).\n\nKumpulkan 100 poin lagi untuk klaim ulang!' }).catch(() => {});
                     }
-                    if (user.vipType === 'fasttrack' && user.vipExpiredAt && new Date(user.vipExpiredAt) <= new Date()) {
-                        user.vipType = 'none';
-                        user.vipExpiredAt = null;
-                    }
-                });
-                return users;
+                }
+                if (u.vipType === 'fasttrack' && u.vipExpiredAt && new Date(u.vipExpiredAt) <= new Date()) {
+                    u.vipType = 'none';
+                    u.vipExpiredAt = null;
+                    fastTrackExpired++;
+                    if (sock) sock.sendMessage(uid, { text: '⚠️ *VIP FAST-TRACK BERAKHIR*\n\nMasa aktif VIP habis. Hubungi Admin untuk perpanjang.' }).catch(() => {});
+                }
             });
-            consoleLog('Daily reset completed', 'cron');
-        } catch (error) {
-            consoleLog(`Reset error: ${error.message}`, 'error');
+            return users;
+        });
+
+        consoleLog(`Reset: ${limitsReset} limits, ${realVIPLost} VIP lost, ${fastTrackExpired} expired`, 'cron');
+
+        // Cleanup expired admin sessions
+        const now = Date.now();
+        for (const [adminId, session] of authenticatedAdmins) {
+            if (now > session.sessionExpiry) {
+                authenticatedAdmins.delete(adminId);
+            }
         }
     }, { timezone: 'Asia/Jakarta' });
 }
 
-// ==================== KEEP-ALIVE SERVER ====================
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-    res.json({
-        status: 'online',
-        bot: '7A Intelligence (7AI)',
-        version: '2.0.0',
-        uptime: Math.floor((Date.now() - botStartTime) / 1000),
-        timestamp: new Date().toISOString()
-    });
-});
-
-app.get('/health', (req, res) => {
-    res.status(200).send('OK');
-});
-
 // ==================== WHATSAPP CONNECTION ====================
 async function connectToWhatsApp() {
-    try {
-        const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-        const { version } = await fetchLatestBaileysVersion();
-        
-        sock = makeWASocket({
-            version,
-            logger,
-            printQRInTerminal: true,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, logger),
-            },
-            browser: ['7AI Bot', 'Chrome', '1.0.0'],
-        });
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+    const { version } = await fetchLatestBaileysVersion();
 
-        sock.ev.on('connection.update', (update) => {
-            const { connection, lastDisconnect, qr } = update;
-            
-            if (qr) {
-                console.log('\n📱 Scan QR Code berikut:\n');
-                qrcode.generate(qr, { small: true });
+    sock = makeWASocket({
+        version,
+        logger,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        browser: ['7AI Bot', 'Chrome', '1.0.0'],
+        connectTimeoutMs: 60000,
+        keepAliveIntervalMs: 30000,
+        syncFullHistory: false,
+    });
+
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        if (qr) {
+            console.log('\n📱 SCAN QR CODE INI:\n');
+            qrcode.generate(qr, { small: true });
+        }
+
+        if (connection === 'close') {
+            const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
+            consoleLog('Connection closed: ' + (statusCode || 'unknown'), 'warning');
+            if (statusCode !== DisconnectReason.loggedOut) {
+                consoleLog('Reconnecting in 5s...');
+                setTimeout(() => connectToWhatsApp(), 5000);
+            } else {
+                consoleLog('Logged out! Hapus auth_info_baileys & restart.', 'error');
             }
-            
-            if (connection === 'close') {
-                const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-                consoleLog(`Connection closed (${statusCode})`, 'warning');
-                if (shouldReconnect) {
-                    consoleLog('Reconnecting in 5s...', 'info');
-                    setTimeout(() => connectToWhatsApp(), 5000);
-                } else {
-                    consoleLog('Logged out! Restart bot.', 'error');
-                }
-            } else if (connection === 'open') {
-                consoleLog('✅ Bot connected!', 'success');
-                consoleLog(`🤖 ${config.botName} ready!`, 'success');
+        } else if (connection === 'open') {
+            consoleLog('✅ BOT CONNECTED!', 'success');
+            consoleLog(`🤖 ${config.botName} ready!`, 'success');
+        }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type === 'notify') {
+            for (const msg of messages) {
+                await handleMessage(msg);
             }
-        });
-
-        sock.ev.on('creds.update', saveCreds);
-
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
-            if (type === 'notify') {
-                for (const message of messages) {
-                    await handleMessage(message);
-                }
-            }
-        });
-
-        return sock;
-    } catch (error) {
-        consoleLog(`Connection error: ${error.message}`, 'error');
-        throw error;
-    }
+        }
+    });
 }
 
 // ==================== MAIN ====================
 async function main() {
     console.log('\n==================================================');
-    console.log('🚀 7A Intelligence Bot Starting...');
+    console.log(`🚀 ${config.botName} Starting...`);
     console.log('==================================================\n');
-    
-    await initializeDatabase();
-    setupCronJobs();
-    
-    // Start keep-alive server
+
+    // Start Express server FIRST
     app.listen(PORT, '0.0.0.0', () => {
         consoleLog(`🌐 Health server: http://0.0.0.0:${PORT}`, 'success');
     });
-    
-    // Handle shutdown
-    process.on('SIGINT', async () => {
-        consoleLog('Shutting down...', 'warning');
-        process.exit(0);
-    });
-    
+
+    await initializeDatabase();
+    setupCronJobs();
     await connectToWhatsApp();
     botStartTime = Date.now();
 }
 
-main().catch(console.error);
+main().catch(console.error)
